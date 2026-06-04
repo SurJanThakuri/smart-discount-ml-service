@@ -1,7 +1,7 @@
 # Virtual environments
 venv/
 venv312/
-.env/
+.env
 
 # Environment
 .envrc
