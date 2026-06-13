@@ -1,109 +1,63 @@
-import os
-import joblib
-import pandas as pd
-import numpy as np
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
-from dotenv import load_dotenv
 
-load_dotenv()
+import config
+from src.models.predict import DiscountPredictor
+from src.utils.helpers import setup_logger
+
+logger = setup_logger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Allow requests from NestJS backend
+CORS(app)
 
-# Load models at startup
-MODEL_PATH = os.getenv("MODEL_PATH", "models")
-discount_model = joblib.load(f"{MODEL_PATH}/discount_rf.pkl")
-slow_model = joblib.load(f"{MODEL_PATH}/slow_gb.pkl")
-# elasticity_model can be added later
+predictor = DiscountPredictor()
 
-def predict_discount(features_df):
-    """Return predicted discount % and confidence (simple std dev from trees)."""
-    preds = discount_model.predict(features_df)
-    # For Random Forest, estimate confidence as 1 - (std of tree predictions / mean)
-    if hasattr(discount_model, 'estimators_'):
-        tree_preds = np.array([tree.predict(features_df) for tree in discount_model.estimators_])
-        std = np.std(tree_preds, axis=0)
-        mean_pred = np.mean(tree_preds, axis=0)
-        confidence = 1 - (std / (mean_pred + 1e-6))
-        confidence = np.clip(confidence, 0, 1)
-    else:
-        confidence = [0.8] * len(preds)
-    return preds, confidence
 
-def predict_slow_risk(features_df):
-    """Return probability of becoming dead stock."""
-    probs = slow_model.predict_proba(features_df)[:, 1]
-    return probs
-
-@app.route('/api/health', methods=['GET'])
+@app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"status": "ML service is running"}), 200
 
-@app.route('/api/predict', methods=['POST'])
+
+@app.route("/api/predict", methods=["POST"])
 def predict():
-    """
-    Expected JSON payload:
-    {
-      "products": [
-        {
-          "product_id": "uuid1",
-          "features": {
-            "sales_velocity_7d": 5.2,
-            "sales_velocity_30d": 4.8,
-            "days_since_last_sale": 12,
-            "profit_margin": 0.32,
-            "day_of_week": 3,
-            "month": 6,
-            "quarter": 2,
-            "is_weekend": 0,
-            "current_stock": 45
-          }
-        }
-      ]
-    }
-    """
-    data = request.get_json()
-    products = data.get("products", [])
-    if not products:
-        return jsonify({"error": "No products provided"}), 400
-    
-    # Build feature matrix
-    feature_rows = []
-    product_ids = []
-    for prod in products:
-        product_ids.append(prod["product_id"])
-        f = prod["features"]
-        required = ['sales_velocity_7d', 'sales_velocity_30d', 'days_since_last_sale',
-                    'profit_margin', 'day_of_week', 'month', 'quarter', 'is_weekend', 'current_stock']
-        row = [f.get(k, 0) for k in required]
-        feature_rows.append(row)
-    
-    feature_names = required
-    features_df = pd.DataFrame(feature_rows, columns=feature_names)
-    
-    # Get predictions
-    discounts, confidences = predict_discount(features_df)
-    slow_risks = predict_slow_risk(features_df)
-    
-    # Placeholder revenue impact
-    revenue_impacts = [d * 100 for d in discounts]
-    
-    response = {
-        "predictions": [
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"error": "Invalid or missing JSON body"}), 400
+
+        products = data.get("products", [])
+        if not products:
+            return jsonify({"error": "No products provided"}), 400
+
+        product_ids = []
+        feature_rows = []
+        for prod in products:
+            pid = prod.get("product_id")
+            features = prod.get("features", {})
+            product_ids.append(pid)
+            feature_rows.append(features)
+
+        predictions = predictor.predict(feature_rows)
+        response_predictions = [
             {
                 "product_id": pid,
-                "recommended_discount": float(disc),
-                "confidence": float(conf),
-                "predicted_sales_lift": float(1.2 + 0.5 * disc),
-                "revenue_impact": float(rev),
-                "slow_risk_probability": float(risk)
+                **pred,
             }
-            for pid, disc, conf, rev, risk in zip(product_ids, discounts, confidences, revenue_impacts, slow_risks)
+            for pid, pred in zip(product_ids, predictions)
         ]
-    }
-    return jsonify(response), 200
 
-if __name__ == '__main__':
-    port = int(os.getenv("FLASK_PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+        return jsonify({"predictions": response_predictions}), 200
+    except Exception as e:
+        logger.exception("Prediction failed")
+        return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
+
+
+@app.route("/api/reload", methods=["POST"])
+def reload():
+    predictor.reload()
+    return jsonify({"status": "Models reloaded successfully"}), 200
+
+
+if __name__ == "__main__":
+    logger.info("Starting Flask server on %s:%s", config.FLASK_HOST, config.FLASK_PORT)
+    app.run(host=config.FLASK_HOST, port=config.FLASK_PORT, debug=False)

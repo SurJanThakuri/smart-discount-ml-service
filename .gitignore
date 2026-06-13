@@ -1,12 +1,13 @@
-# Virtual environments
-venv/
-venv312/
-.env
-
 # Environment
+.env
 .envrc
 .env.local
 .env.*.local
+
+# Virtual environments
+venv/
+venv*/
+.venv/
 
 # Python
 __pycache__/
@@ -21,8 +22,13 @@ build/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Jupyter Notebooks (checkpoints only)
+# Jupyter Notebooks
 .ipynb_checkpoints/
+notebooks/
+
+# Logs
+*.log
+logs/
 
 # ML artifacts (generated model files)
 models/*.pkl
@@ -30,9 +36,10 @@ models/*.h5
 models/*.joblib
 models/*.onnx
 
-# Raw / processed data (intermediate artifacts)
+# Data (intermediate artifacts)
 data/raw/
 data/processed/
+data/synthetic/
 
 # IDE / Editor
 .vscode/
@@ -49,4 +56,18 @@ Thumbs.db
 .ruff_cache/
 htmlcov/
 .coverage
+.coverage.*
 coverage.xml
+
+# Docker
+Dockerfile
+docker-compose*.yml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temp
+*.tmp
+*.temp
