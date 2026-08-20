@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -50,6 +52,53 @@ def predict():
     except Exception as e:
         logger.exception("Prediction failed")
         return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
+
+
+@app.route("/api/predict/batch", methods=["POST"])
+def predict_batch():
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"error": "Invalid or missing JSON body"}), 400
+
+        products = data.get("products", [])
+        if not products:
+            return jsonify({"error": "No products provided"}), 400
+
+        product_ids = []
+        feature_rows = []
+        for prod in products:
+            pid = prod.get("product_id")
+            features = prod.get("features", {})
+            product_ids.append(pid)
+            feature_rows.append(features)
+
+        predictions = predictor.predict(feature_rows)
+        response_predictions = [
+            {"product_id": pid, **pred}
+            for pid, pred in zip(product_ids, predictions)
+        ]
+
+        return jsonify({
+            "predictions": response_predictions,
+            "total": len(response_predictions),
+            "generated_at": datetime.utcnow().isoformat(),
+        }), 200
+    except Exception as e:
+        logger.exception("Batch prediction failed")
+        return jsonify({"error": f"Batch prediction failed: {str(e)}"}), 500
+
+
+@app.route("/api/retrain", methods=["POST"])
+def retrain():
+    try:
+        from src.models.train import train_pipeline
+        train_pipeline()
+        predictor.reload()
+        return jsonify({"status": "Models retrained and reloaded successfully"}), 200
+    except Exception as e:
+        logger.exception("Retrain failed")
+        return jsonify({"error": f"Retrain failed: {str(e)}"}), 500
 
 
 @app.route("/api/reload", methods=["POST"])
