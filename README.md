@@ -1,4 +1,4 @@
-# Dynamic Discount Recommender — ML Service
+# Smart Discount Recommender — ML Service
 
 Flask-based ML microservice that recommends optimal discount percentages and identifies slow-moving stock risk using ensemble models (Random Forest + Gradient Boosting) trained on Superstore sales data.
 
@@ -24,9 +24,32 @@ source venv312/bin/activate
 pip install -r requirements.txt
 ```
 
+> The `src/` package's `__init__.py` files are required — all modules import each other as `src.data.loader`, `src.models.train`, etc. Always run commands from the `ml-service/` root.
+
+## Where This Sits in the Project
+
+```
+React (:5173)
+   │  POST /ml/predict            (NestJS proxy)
+   ▼
+NestJS (:3003)  ──►  Flask (:5000)
+   │                   POST /api/predict
+   │                   GET  /api/health
+   │                   POST /api/reload
+   ▼
+PostgreSQL — rows written to `recommendations`
+```
+
+Two clients reach this service:
+
+1. **NestJS** — `recommend.service.generate()` builds feature vectors from real sales data and persists the predictions. If this call fails, NestJS falls back to an in-process heuristic.
+2. **React** — `useDiscountPredictions()` calls `/ml/predict` for live previews. If it fails, the client falls back to rules in `client/src/hooks/useDiscounts.ts`.
+
+So the whole stack runs degraded-but-functional without this service.
+
 ## Dataset
 
-The Superstore Sales dataset (`data/raw/superstore.xls`) is included. It contains 1,000 sales records with columns: OrderID, OrderDate, ProductID, Sales, Profit, Discount, Quantity, and others.
+The Superstore Sales dataset (`data/raw/superstore.xls`) is included. It contains 1,000 sales records with columns: OrderID, OrderDate, ShipDate, ShipMode, CustomerID, CustomerName, Segment, City, State, PostalCode, Region, ProductID, Category, Sub-Category, ProductName, Sales, Quantity, Discount, Profit.
 
 To use your own data, place a `.xls` or `.csv` file in `data/raw/` and update `config.py`'s `RAW_DATA_FILE` path.
 
@@ -58,7 +81,7 @@ Or directly:
 python app.py
 ```
 
-The server starts on `http://localhost:5000` by default (configurable via `.env`).
+The server starts on `http://localhost:5000` by default (configurable via `.env`). Both trained models are loaded at startup.
 
 ## API Endpoints
 
@@ -144,112 +167,29 @@ Response:
 | `revenue_impact` | Estimated revenue change percentage |
 | `slow_risk_probability` | Probability this product is at risk of being slow-moving (0-1) |
 
+### Batch Predict
+
+```
+POST /api/predict/batch
+```
+
+Same payload/response shape as `/api/predict`, processed in chunks for large catalogs.
+
+### Retrain
+
+```
+POST /api/retrain
+```
+
+Re-runs the full training pipeline on the configured dataset and writes fresh `.pkl` files.
+
 ### Reload Models
 
 ```
 POST /api/reload
 ```
 
-Reloads models from disk without restarting the server. Useful after retraining.
-
-## Integrating with the Backend
-
-The NestJS backend (`../server/`) runs independently and needs to call this ML service for predictions.
-
-### Installation
-
-In the server project, install the HTTP client:
-
-```bash
-cd ../server
-npm install @nestjs/axios axios
-```
-
-### Environment Variable
-
-Add to the server's `.env`:
-
-```
-ML_SERVICE_URL=http://localhost:5000
-```
-
-### Example NestJS Module
-
-```typescript
-// src/ml/ml.module.ts
-import { Module } from '@nestjs/common';
-import { HttpModule } from '@nestjs/axios';
-import { MlService } from './ml.service';
-import { MlController } from './ml.controller';
-
-@Module({
-  imports: [HttpModule.register({
-    baseURL: process.env.ML_SERVICE_URL || 'http://localhost:5000',
-    timeout: 10000,
-  })],
-  controllers: [MlController],
-  providers: [MlService],
-  exports: [MlService],
-})
-export class MlModule {}
-```
-
-```typescript
-// src/ml/ml.service.ts
-import { Injectable } from '@nestjs/common';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
-
-@Injectable()
-export class MlService {
-  constructor(private readonly httpService: HttpService) {}
-
-  async predictDiscounts(products: any[]) {
-    const { data } = await firstValueFrom(
-      this.httpService.post('/api/predict', { products })
-    );
-    return data.predictions;
-  }
-
-  async healthCheck() {
-    const { data } = await firstValueFrom(
-      this.httpService.get('/api/health')
-    );
-    return data;
-  }
-}
-```
-
-```typescript
-// src/ml/ml.controller.ts
-import { Controller, Post, Body } from '@nestjs/common';
-import { MlService } from './ml.service';
-
-@Controller('ml')
-export class MlController {
-  constructor(private readonly mlService: MlService) {}
-
-  @Post('predict')
-  async predict(@Body('products') products: any[]) {
-    return this.mlService.predictDiscounts(products);
-  }
-}
-```
-
-### Expected Data Flow
-
-```
-Client App (React)  ──POST──>  NestJS Backend (:3003)
-                                  │
-                           POST /ml/predict
-                                  │
-                                  v
-                         ML Service (:5000)
-                           POST /api/predict
-                                  │
-                                  v
-                        Returns discount predictions
-```
+Reloads models from disk without restarting the server. Useful after retraining — this is also exposed by the NestJS proxy as `POST /ml/reload`.
 
 ## Environment Variables
 
@@ -264,25 +204,25 @@ Client App (React)  ──POST──>  NestJS Backend (:3003)
 | `SLOW_RISK_THRESHOLD` | `0.2` | Discount threshold for slow-risk classification |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
 
-Copy `.env.example` to `.env` and adjust as needed.
+All values are read by `config.py` via `python-dotenv`, with the defaults shown above — a `.env` file is optional and only needs to override what you want to change.
 
 ## Project Structure
 
 ```
 ml-service/
-├── app.py                    # Flask API entry point
-├── config.py                 # Central configuration
+├── app.py                    # Flask API entry point (routes)
+├── config.py                 # Paths + env configuration
 ├── run.py                    # CLI entry point (train/serve)
 ├── requirements.txt          # Python dependencies
-├── .env                      # Environment variables (user)
-├── .env.example              # Environment variables (template)
+├── .env                      # Environment overrides (optional)
 ├── README.md                 # This file
+├── venv312/                  # Virtual environment
 ├── data/
 │   ├── raw/
 │   │   └── superstore.xls    # Original dataset
-│   ├── processed/            # Cleaned & feature matrices
+│   ├── processed/            # Cleaned data, features, feature_columns.pkl
 │   └── synthetic/            # Optional test data
-├── models/                   # Trained .pkl files
+├── models/                   # discount_rf_v1.pkl, slow_gb_v1.pkl
 └── src/
     ├── __init__.py
     ├── data/
@@ -306,5 +246,6 @@ ml-service/
 - **Missing columns error**: Ensure `data/raw/superstore.xls` contains the expected columns. The loader auto-detects by case-insensitive matching.
 - **Model not found**: Run `python run.py train` first to generate model files.
 - **Port already in use**: Change `FLASK_PORT` in `.env`.
-- **Module import errors**: Run from the `ml-service/` root directory with the virtual environment activated.
+- **Module import errors**: Run from the `ml-service/` root directory with the virtual environment activated — `src/` subpackages must keep their `__init__.py` files.
 - **`.xls` loading fails**: Ensure `xlrd` is installed (included in `requirements.txt`).
+- **NestJS can't reach it**: Check `ML_SERVICE_URL` in `server/.env` (default `http://localhost:5000`) and confirm `GET /api/health` responds.
